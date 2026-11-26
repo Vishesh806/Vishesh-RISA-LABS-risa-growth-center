@@ -67,7 +67,7 @@ h2{font-size:15px;margin:18px 0 8px}
 <main id="view"></main>
 <button id="fab" class="p">💬 AI Growth Analyst</button>
 <aside id="chat">
-  <div class="hd"><b>AI Growth Analyst</b><span id="aiStatus" class="note"></span><div style="flex:1"></div><button id="clearChat" title="Clear conversation">Clear</button><button id="closeChat">✕</button></div>
+  <div class="hd"><b>AI Growth Analyst</b><span id="aiStatus" class="note"></span><div style="flex:1"></div><button onclick="openAISettings()" title="AI connection settings">⚙</button><button id="clearChat" title="Clear conversation">Clear</button><button id="closeChat">✕</button></div>
   <div id="msgs"></div>
   <div class="ft">
     <div class="chips" id="chips"></div>
@@ -692,16 +692,24 @@ let sampleFn = null;
 function provider(){ if(S.ai.key && (S.ai.provider==='gemini' || S.ai.provider==='openai')) return S.ai.provider; if(sampleFn) return 'claude'; return null; }
 function updateAIStatus(){ if(!S) return; const p = provider(); document.getElementById('aiStatus').textContent = p ? ' · ' + (p==='claude'?'Claude (claude.ai)':p==='gemini'?'Gemini · '+S.ai.model:'OpenAI-compatible · '+S.ai.model) : ' · not connected'; }
 
+let geminiAuth = 'auto';
 async function callGemini(hist){
   const decls = TOOLS.map(t => ({name:t.name, description:t.description, parameters:t.parameters}));
   const contents = hist.map(m => ({role:m.role==='assistant'?'model':'user', parts:[{text:m.text}]}));
   const models = [...new Set([S.ai.model||'gemini-3.5-flash', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-2.5-flash'])];
   let mi = 0;
   for(let step = 0; step < 10; step++){
-    let res; while(true){ res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(models[mi])}:generateContent?key=${encodeURIComponent(S.ai.key)}`, {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({systemInstruction:{parts:[{text:SYS()}]}, contents, tools:[{functionDeclarations:decls}], generationConfig:{temperature:0.2}})});
+    const body = JSON.stringify({systemInstruction:{parts:[{text:SYS()}]}, contents, tools:[{functionDeclarations:decls}], generationConfig:{temperature:0.2}});
+    let res; while(true){
+      const base = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(models[mi])}:generateContent`;
+      // Send the key in the x-goog-api-key header (required for newer key types); fall back to ?key= for older keys.
+      if(geminiAuth !== 'query') res = await fetch(base, {method:'POST', headers:{'Content-Type':'application/json', 'x-goog-api-key':S.ai.key.trim()}, body});
+      if(geminiAuth === 'query' || (!res.ok && (res.status === 401 || res.status === 400) && geminiAuth === 'auto')){
+        const r2 = await fetch(base + '?key=' + encodeURIComponent(S.ai.key.trim()), {method:'POST', headers:{'Content-Type':'application/json'}, body});
+        if(r2.ok){ geminiAuth = 'query'; res = r2; } else if(geminiAuth === 'query') res = r2;
+      } else if(res.ok) geminiAuth = 'header';
       if(res.status === 404 && mi < models.length-1){ mi++; continue; } break; }
-    if(!res.ok) throw new Error('Gemini ' + res.status + ': ' + (await res.text()).slice(0,300));
+    if(!res.ok){ const txt = (await res.text()).slice(0,400); throw new Error('Gemini ' + res.status + ': ' + txt + (res.status===401||res.status===400?'\n\nCheck ⚙ AI settings: the key must be a Gemini API key from aistudio.google.com (Get API key).':res.status===403?'\n\nThe key\'s website restriction blocks this site — add this site URL in Google Cloud → Credentials.':'')); }
     const j = await res.json(); const cand = j.candidates && j.candidates[0]; if(!cand || !cand.content) throw new Error('Empty response: ' + JSON.stringify(j).slice(0,200));
     contents.push(cand.content); const parts = cand.content.parts || []; const calls = parts.filter(p => p.functionCall);
     if(!calls.length) return parts.map(p => p.text || '').join('').trim();
